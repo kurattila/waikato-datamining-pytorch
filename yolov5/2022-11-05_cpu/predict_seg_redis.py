@@ -1,7 +1,9 @@
 import cv2
+import json
 import numpy as np
 import torch
 import traceback
+import uuid
 
 from datetime import datetime
 from rdh import Container, MessageContainer, create_parser, configure_redis, run_harness, log
@@ -22,7 +24,13 @@ def process_image(msg_cont):
         if config.verbose:
             log("process_images - start processing image")
 
-        jpg_as_np = np.frombuffer(msg_cont.message['data'], dtype=np.uint8)
+        messageRawIdLength = 36 # e.g. 'f2b8fb61-df57-4297-a83c-e78de3882a97'
+        messageRawId = np.frombuffer(msg_cont.message['data'], dtype=np.uint8, offset=0, count=messageRawIdLength)
+        messageGuid = uuid.UUID(messageRawId.tobytes().decode("utf-8"))
+        if config.verbose:
+            log("process_images - message guid: %s" % str(messageGuid))
+
+        jpg_as_np = np.frombuffer(msg_cont.message['data'], dtype=np.uint8, offset=messageRawIdLength)
         im0 = cv2.imdecode(jpg_as_np, flags=1)
         im = prepare_image(im0, config.image_size, config.model.fp16, config.model.stride, config.device)
         preds = predict_segmentation_opex(config.model,
@@ -32,7 +40,10 @@ def process_image(msg_cont):
                                           iou_threshold=config.iou_threshold,
                                           max_detection=config.max_detection)
         preds_str = preds.to_json_string()
-        msg_cont.params.redis.publish(msg_cont.params.channel_out, preds_str)
+        preds_json = json.loads(preds_str)
+        preds_json["messageGuid"] = str(messageGuid)
+        msg_cont.params.redis.publish(msg_cont.params.channel_out, json.dumps(preds_json))
+
         if config.verbose:
             log("process_images - predictions string published: %s" % msg_cont.params.channel_out)
             end_time = datetime.now()
